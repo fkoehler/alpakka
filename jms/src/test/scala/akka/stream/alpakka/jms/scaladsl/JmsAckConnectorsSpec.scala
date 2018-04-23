@@ -25,6 +25,51 @@ class JmsAckConnectorsSpec extends JmsSpec {
   override implicit val patienceConfig = PatienceConfig(2.minutes)
 
   "The JMS Ack Connectors" should {
+    "publish and ack strings through a queue and not reconsume them" in withServer() { ctx =>
+      val connectionFactory = new ActiveMQConnectionFactory(ctx.url)
+
+      val jmsSink: Sink[String, Future[Done]] = JmsProducer.textSink(
+        JmsProducerSettings(connectionFactory).withQueue("test")
+      )
+
+      val in = List("m1", "m2")
+      Source(in).runWith(jmsSink)
+
+      val jmsSource: Source[AckEnvelope, KillSwitch] = JmsConsumer.ackSource(
+        JmsConsumerSettings(connectionFactory).withSessionCount(5).withBufferSize(0).withQueue("test")
+      )
+
+      val result = jmsSource
+        .take(in.size)
+        .map(env => (env, env.message.asInstanceOf[TextMessage].getText))
+        .map { case (env, text) => env.acknowledge(); text }
+        .runWith(Sink.seq)
+
+      result.futureValue should contain theSameElementsAs in
+
+      // publish two more messages.
+      val jmsSink2: Sink[String, Future[Done]] = JmsProducer.textSink(
+        JmsProducerSettings(connectionFactory).withQueue("test")
+      )
+
+      val in2 = List("m3", "m4")
+      Source(in).runWith(jmsSink2)
+
+      val jmsSource2: Source[AckEnvelope, KillSwitch] = JmsConsumer.ackSource(
+        JmsConsumerSettings(connectionFactory).withSessionCount(5).withBufferSize(0).withQueue("test")
+      )
+      val result2 = jmsSource2
+        .take(in2.size)
+        .map(env => (env, env.message.asInstanceOf[TextMessage].getText))
+        .map { case (env, text) => env.acknowledge(); text }
+        .runWith(Sink.seq)
+
+      // The first two ones should be ACK'd and not show up here but they do:
+      // Vector("m2", "m1") did not contain the same elements as List("m3", "m4")
+      // Adding: Thread.sleep, etc does not help, Reusing same Source/Sink does not help (and shoult not make a difference)
+      result2.futureValue should contain theSameElementsAs in2
+    }
+
     "publish and consume strings through a queue" in withServer() { ctx =>
       val connectionFactory = new ActiveMQConnectionFactory(ctx.url)
 
